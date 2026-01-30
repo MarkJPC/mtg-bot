@@ -2,12 +2,30 @@
 
 import asyncio
 import logging
+from dotenv import load_dotenv
+load_dotenv()
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from config import Config, EMBED_COLOR
 from database import Database
+
+# ANSI color codes for console output
+class Colors:
+    RESET = "\033[0m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+def log(source: str, message: str, color: str = Colors.WHITE):
+    """Print colored log with source tag."""
+    print(f"{color}[{source}]{Colors.RESET} {message}")
 
 # Set up logging
 logging.basicConfig(
@@ -36,24 +54,30 @@ class MTGBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Called when the bot is starting up."""
+        log("BOT", "setup_hook starting...", Colors.GREEN)
         # Connect to database
         await self.db.connect()
-        logger.info("Database connected")
+        log("BOT", "Database connected", Colors.GREEN)
 
         # Load cogs
         await self.load_extension("cogs.game_logging")
+        log("BOT", "  Loaded cogs.game_logging", Colors.GREEN)
         await self.load_extension("cogs.stats")
+        log("BOT", "  Loaded cogs.stats", Colors.GREEN)
         await self.load_extension("cogs.stereotypes")
-        logger.info("Cogs loaded")
+        log("BOT", "  Loaded cogs.stereotypes", Colors.GREEN)
 
         # Sync commands
+        log("BOT", "Syncing commands...", Colors.GREEN)
         await self.tree.sync()
-        logger.info("Commands synced")
+        log("BOT", "Commands synced!", Colors.GREEN)
 
     async def on_ready(self) -> None:
         """Called when the bot is ready."""
-        logger.info(f"Logged in as {self.user} (ID: {self.user.id})")
-        logger.info(f"Connected to {len(self.guilds)} guild(s)")
+        log("BOT", f"Logged in as {self.user} (ID: {self.user.id})", Colors.GREEN)
+        log("BOT", f"Connected to {len(self.guilds)} guild(s)", Colors.GREEN)
+        for guild in self.guilds:
+            log("BOT", f"  - {guild.name} (ID: {guild.id})", Colors.GREEN)
 
     async def close(self) -> None:
         """Clean up on shutdown."""

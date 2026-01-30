@@ -10,6 +10,21 @@ from models import (
     PlayerStats, DeckStats, HeadToHeadStats
 )
 
+# ANSI color codes for console output
+class Colors:
+    RESET = "\033[0m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+def log(source: str, message: str, color: str = Colors.WHITE):
+    """Print colored log with source tag."""
+    print(f"{color}[{source}]{Colors.RESET} {message}")
+
 
 class Database:
     """Async SQLite database manager."""
@@ -147,18 +162,22 @@ class Database:
 
     async def get_player_by_discord_id(self, discord_id: str) -> Optional[Player]:
         """Get player by Discord ID."""
+        log("DB", f"get_player_by_discord_id({discord_id})", Colors.BLUE)
         async with self.conn.execute(
             "SELECT * FROM players WHERE discord_id = ?",
             (discord_id,)
         ) as cursor:
             row = await cursor.fetchone()
             if row:
-                return Player(
+                player = Player(
                     id=row["id"],
                     discord_id=row["discord_id"],
                     username=row["username"],
                     created_at=datetime.fromisoformat(row["created_at"])
                 )
+                log("DB", f"  Found player: {player.username} (db_id={player.id})", Colors.BLUE)
+                return player
+        log("DB", f"  No player found for discord_id={discord_id}", Colors.YELLOW)
         return None
 
     # Deck operations
@@ -407,10 +426,15 @@ class Database:
 
     async def get_head_to_head(self, discord_id1: str, discord_id2: str) -> Optional[HeadToHeadStats]:
         """Get head-to-head stats between two players."""
+        log("DB", f"get_head_to_head({discord_id1}, {discord_id2})", Colors.BLUE)
         player1 = await self.get_player_by_discord_id(discord_id1)
         player2 = await self.get_player_by_discord_id(discord_id2)
 
+        log("DB", f"  player1 lookup result: {player1}", Colors.BLUE)
+        log("DB", f"  player2 lookup result: {player2}", Colors.BLUE)
+
         if not player1 or not player2:
+            log("DB", f"  Returning None - missing player(s)", Colors.YELLOW)
             return None
 
         # Games where both players participated
@@ -591,3 +615,18 @@ class Database:
             ORDER BY count DESC
         """, (player.id,)) as cursor:
             return [(row["name"], row["count"]) async for row in cursor]
+
+    async def get_game_stereotypes(self, game_id: int) -> list[tuple[str, str]]:
+        """Get all stereotypes assigned in a specific game.
+
+        Returns list of (player_name, stereotype_name) tuples.
+        """
+        async with self.conn.execute("""
+            SELECT p.username, s.name as stereotype_name
+            FROM game_stereotypes gs
+            JOIN players p ON gs.player_id = p.id
+            JOIN stereotypes s ON gs.stereotype_id = s.id
+            WHERE gs.game_id = ?
+            ORDER BY p.username, s.name
+        """, (game_id,)) as cursor:
+            return [(row["username"], row["stereotype_name"]) async for row in cursor]

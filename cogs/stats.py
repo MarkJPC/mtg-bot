@@ -6,6 +6,7 @@ from discord.ext import commands
 from datetime import datetime
 
 from config import EMBED_COLOR
+from utils import Colors, log
 from utils.helpers import (
     create_error_embed,
     create_info_embed,
@@ -15,6 +16,7 @@ from utils.helpers import (
     format_head_to_head,
     format_duration,
     format_placement,
+    format_stereotype_narrative,
 )
 
 
@@ -27,8 +29,10 @@ class Stats(commands.Cog):
     @app_commands.command(name="leaderboard", description="View the points leaderboard")
     async def leaderboard(self, interaction: discord.Interaction) -> None:
         """Display the leaderboard sorted by points."""
+        log("STATS", f"leaderboard command invoked by {interaction.user}", Colors.CYAN)
         db = self.bot.db
         stats = await db.get_leaderboard()
+        log("STATS", f"leaderboard got {len(stats)} players from DB", Colors.CYAN)
 
         if not stats:
             await interaction.response.send_message(
@@ -66,8 +70,11 @@ class Stats(commands.Cog):
         player: discord.Member
     ) -> None:
         """Display detailed stats for a specific player."""
+        log("STATS", f"stats command invoked by {interaction.user}", Colors.CYAN)
+        log("STATS", f"  player param: {player} (id={player.id}, type={type(player).__name__})", Colors.CYAN)
         db = self.bot.db
         player_stats = await db.get_player_stats(str(player.id))
+        log("STATS", f"  player_stats from DB: {player_stats}", Colors.CYAN)
 
         if not player_stats:
             await interaction.response.send_message(
@@ -127,7 +134,12 @@ class Stats(commands.Cog):
         player2: discord.Member
     ) -> None:
         """Display head-to-head statistics between two players."""
+        log("STATS", f"headtohead command invoked by {interaction.user}", Colors.GREEN)
+        log("STATS", f"  player1 param: {player1} (id={player1.id}, type={type(player1).__name__})", Colors.GREEN)
+        log("STATS", f"  player2 param: {player2} (id={player2.id}, type={type(player2).__name__})", Colors.GREEN)
+
         if player1.id == player2.id:
+            log("STATS", f"  ERROR: player1 == player2", Colors.RED)
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Invalid Comparison",
@@ -138,9 +150,12 @@ class Stats(commands.Cog):
             return
 
         db = self.bot.db
+        log("STATS", f"  Calling db.get_head_to_head({player1.id}, {player2.id})", Colors.GREEN)
         h2h_stats = await db.get_head_to_head(str(player1.id), str(player2.id))
+        log("STATS", f"  h2h_stats result: {h2h_stats}", Colors.GREEN)
 
         if not h2h_stats:
+            log("STATS", f"  ERROR: h2h_stats is None/empty", Colors.RED)
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "No Data",
@@ -151,6 +166,7 @@ class Stats(commands.Cog):
             return
 
         if h2h_stats.games_together == 0:
+            log("STATS", f"  No games together", Colors.YELLOW)
             await interaction.response.send_message(
                 embed=create_info_embed(
                     "Head to Head",
@@ -160,6 +176,7 @@ class Stats(commands.Cog):
             )
             return
 
+        log("STATS", f"  SUCCESS: Sending h2h embed", Colors.GREEN)
         embed = create_info_embed("Head to Head")
         embed.description = format_head_to_head(h2h_stats)
 
@@ -263,6 +280,13 @@ class Stats(commands.Cog):
 
             duration_str = format_duration(game.get("duration_minutes"))
 
+            # Get stereotypes for this game
+            stereotypes = await db.get_game_stereotypes(game["id"])
+            stereotype_str = ""
+            if stereotypes:
+                narrative = format_stereotype_narrative(stereotypes)
+                stereotype_str = f"{narrative}\n"
+
             embed.add_field(
                 name=f"Game #{game['id']} - {date_str}",
                 value=(
@@ -270,6 +294,7 @@ class Stats(commands.Cog):
                     f"**Win Con:** {game['win_condition']} | "
                     f"**Duration:** {duration_str}\n"
                     f"{players_str}"
+                    f"{stereotype_str}"
                 ),
                 inline=False
             )

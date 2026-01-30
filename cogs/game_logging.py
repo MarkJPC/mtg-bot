@@ -6,11 +6,14 @@ from discord.ext import commands
 from typing import Optional
 
 from config import WIN_CONDITIONS, EMBED_COLOR
+from utils import Colors, log
 from utils.helpers import (
     parse_mentions,
+    parse_player_names,
     create_error_embed,
     create_info_embed,
     format_placement,
+    format_stereotype_narrative,
 )
 
 
@@ -39,7 +42,8 @@ class GameTypeSelect(ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         game_type = self.values[0]
-        modal = GameLogModal(game_type)
+        original_message = self.view.original_message
+        modal = GameLogModal(game_type, original_message)
         await interaction.response.send_modal(modal)
 
 
@@ -48,22 +52,24 @@ class GameTypeView(ui.View):
 
     def __init__(self):
         super().__init__(timeout=300)
+        self.original_message = None  # Will be set after sending
         self.add_item(GameTypeSelect())
 
 
 class GameLogModal(ui.Modal):
     """Modal for logging game details."""
 
-    def __init__(self, game_type: str):
+    def __init__(self, game_type: str, original_message: Optional[discord.Message] = None):
         super().__init__(title=f"Log {game_type.upper()} Game")
         self.game_type = game_type
+        self.original_message = original_message
 
         min_players = 2 if game_type == "1v1" else 3
         max_players = 2 if game_type == "1v1" else 4
 
         self.players = ui.TextInput(
             label=f"Players (in placement order, {min_players}-{max_players})",
-            placeholder="@Player1 @Player2 @Player3 @Player4 (1st to last)",
+            placeholder="Player1 Player2 (1st place to last - use Discord usernames)",
             style=discord.TextStyle.short,
             required=True
         )
@@ -96,23 +102,34 @@ class GameLogModal(ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         """Process the submitted game data."""
+        log("GAME_LOG", f"Modal submitted by {interaction.user}", Colors.MAGENTA)
+        log("GAME_LOG", f"  game_type: {self.game_type}", Colors.MAGENTA)
+        log("GAME_LOG", f"  players raw input: '{self.players.value}'", Colors.MAGENTA)
+        log("GAME_LOG", f"  decks raw input: '{self.decks.value}'", Colors.MAGENTA)
+        log("GAME_LOG", f"  win_condition: '{self.win_condition.value}'", Colors.MAGENTA)
+        log("GAME_LOG", f"  duration: '{self.duration.value}'", Colors.MAGENTA)
+
         # Get the bot's database
         bot = interaction.client
         db = bot.db
 
-        # Parse player mentions
-        player_ids = parse_mentions(self.players.value)
+        # Parse player names/mentions
+        player_inputs = parse_player_names(self.players.value)
+        log("GAME_LOG", f"  parsed player_inputs: {player_inputs}", Colors.MAGENTA)
 
         # Validate player count
         min_players = 2 if self.game_type == "1v1" else 3
         max_players = 2 if self.game_type == "1v1" else 4
 
-        if len(player_ids) < min_players or len(player_ids) > max_players:
+        if len(player_inputs) < min_players or len(player_inputs) > max_players:
+            log("GAME_LOG", f"  ERROR: Invalid player count. Got {len(player_inputs)}, need {min_players}-{max_players}", Colors.RED)
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Invalid Player Count",
                     f"{self.game_type} requires {min_players}-{max_players} players. "
-                    f"You mentioned {len(player_ids)} players."
+                    f"You provided {len(player_inputs)} players.\n\n"
+                    "**Tip:** Enter player names separated by spaces or commas:\n"
+                    "`Player1 Player2` or `Player1, Player2`"
                 ),
                 ephemeral=True
             )
@@ -120,12 +137,14 @@ class GameLogModal(ui.Modal):
 
         # Parse decks
         deck_names = [d.strip() for d in self.decks.value.split(",")]
+        log("GAME_LOG", f"  parsed deck_names: {deck_names}", Colors.MAGENTA)
 
-        if len(deck_names) != len(player_ids):
+        if len(deck_names) != len(player_inputs):
+            log("GAME_LOG", f"  ERROR: Deck count mismatch. {len(player_inputs)} players, {len(deck_names)} decks", Colors.RED)
             await interaction.response.send_message(
                 embed=create_error_embed(
                     "Deck Count Mismatch",
-                    f"You mentioned {len(player_ids)} players but provided {len(deck_names)} decks. "
+                    f"You provided {len(player_inputs)} players but {len(deck_names)} decks. "
                     "Make sure to separate deck names with commas."
                 ),
                 ephemeral=True
@@ -149,24 +168,77 @@ class GameLogModal(ui.Modal):
                 )
                 return
 
+        # Resolve player names/IDs to Discord users
+        resolved_users = []
+        guild = interaction.guild
+
+        for input_type, input_value in player_inputs:
+            log("GAME_LOG", f"  Resolving player: type={input_type}, value={input_value}", Colors.MAGENTA)
+
+            if input_type == "id":
+                # It's a Discord user ID from a mention
+                try:
+                    user = await interaction.client.fetch_user(int(input_value))
+                    resolved_users.append((str(user.id), user.display_name))
+                    log("GAME_LOG", f"    Resolved by ID: {user.display_name}", Colors.GREEN)
+                except discord.NotFound:
+                    await interaction.response.send_message(
+                        embed=create_error_embed(
+                            "User Not Found",
+                            f"Could not find user with ID {input_value}"
+                        ),
+                        ephemeral=True
+                    )
+                    return
+            else:
+                # It's a username - search in the guild
+                if not guild:
+                    await interaction.response.send_message(
+                        embed=create_error_embed(
+                            "Error",
+                            "This command must be used in a server, not DMs."
+                        ),
+                        ephemeral=True
+                    )
+                    return
+
+                # Search for member by name (case-insensitive)
+                member = None
+                input_lower = input_value.lower()
+
+                for m in guild.members:
+                    if (m.name.lower() == input_lower or
+                        m.display_name.lower() == input_lower or
+                        (m.global_name and m.global_name.lower() == input_lower)):
+                        member = m
+                        break
+
+                if not member:
+                    log("GAME_LOG", f"    ERROR: Could not find member '{input_value}'", Colors.RED)
+                    # List available members for debugging
+                    available = [f"{m.name} ({m.display_name})" for m in guild.members[:10]]
+                    log("GAME_LOG", f"    Available members (first 10): {available}", Colors.YELLOW)
+                    await interaction.response.send_message(
+                        embed=create_error_embed(
+                            "Player Not Found",
+                            f"Could not find player **{input_value}** in this server.\n\n"
+                            "Make sure the name matches their Discord username or display name exactly."
+                        ),
+                        ephemeral=True
+                    )
+                    return
+
+                resolved_users.append((str(member.id), member.display_name))
+                log("GAME_LOG", f"    Resolved by name: {member.display_name} (ID: {member.id})", Colors.GREEN)
+
+        log("GAME_LOG", f"  All resolved users: {resolved_users}", Colors.GREEN)
+
         # Register/lookup players and decks
         placements = []
         player_data = []  # For summary display
 
-        for i, (discord_id, deck_name) in enumerate(zip(player_ids, deck_names)):
-            # Fetch user from Discord
-            try:
-                user = await interaction.client.fetch_user(int(discord_id))
-                username = user.display_name
-            except discord.NotFound:
-                await interaction.response.send_message(
-                    embed=create_error_embed(
-                        "User Not Found",
-                        f"Could not find user with ID {discord_id}"
-                    ),
-                    ephemeral=True
-                )
-                return
+        for i, ((discord_id, username), deck_name) in enumerate(zip(resolved_users, deck_names)):
+            log("GAME_LOG", f"  Processing: {username} with deck {deck_name}", Colors.MAGENTA)
 
             # Get or create player
             player = await db.get_or_create_player(discord_id, username)
@@ -209,7 +281,7 @@ class GameLogModal(ui.Modal):
         embed.add_field(name="Results", value=placements_text, inline=False)
 
         # Send response with stereotype assignment view
-        view = StereotypeAssignmentView(game.id, player_data)
+        view = StereotypeAssignmentView(game.id, player_data, self.original_message)
         await interaction.response.send_message(
             embed=embed,
             view=view
@@ -252,7 +324,8 @@ class PlayerSelectForStereotype(ui.Select):
             player_id=player_id,
             player_name=player_name,
             players=self.players,
-            stereotypes=stereotypes
+            stereotypes=stereotypes,
+            original_message=self.view.original_message
         )
 
         await interaction.response.edit_message(
@@ -291,7 +364,8 @@ class StereotypeSelectionView(ui.View):
         player_id: int,
         player_name: str,
         players: list[dict],
-        stereotypes: list
+        stereotypes: list,
+        original_message: Optional[discord.Message] = None
     ):
         super().__init__(timeout=300)
         self.game_id = game_id
@@ -299,6 +373,7 @@ class StereotypeSelectionView(ui.View):
         self.player_name = player_name
         self.players = players
         self.selected_stereotype_ids = []
+        self.original_message = original_message
 
         self.add_item(StereotypeSelect(stereotypes))
 
@@ -323,12 +398,12 @@ class StereotypeSelectionView(ui.View):
             await interaction.response.edit_message(
                 content=f"Assigned to **{self.player_name}**: {', '.join(names)}\n\n"
                         "Select another player or click Done.",
-                view=StereotypeAssignmentView(self.game_id, self.players)
+                view=StereotypeAssignmentView(self.game_id, self.players, self.original_message)
             )
         else:
             await interaction.response.edit_message(
                 content="No stereotypes selected. Select another player or click Done.",
-                view=StereotypeAssignmentView(self.game_id, self.players)
+                view=StereotypeAssignmentView(self.game_id, self.players, self.original_message)
             )
 
     @ui.button(label="Back", style=discord.ButtonStyle.secondary, row=1)
@@ -336,26 +411,43 @@ class StereotypeSelectionView(ui.View):
         """Go back to player selection."""
         await interaction.response.edit_message(
             content="Select a player to assign stereotypes to, or click Done.",
-            view=StereotypeAssignmentView(self.game_id, self.players)
+            view=StereotypeAssignmentView(self.game_id, self.players, self.original_message)
         )
 
 
 class StereotypeAssignmentView(ui.View):
     """View for the stereotype assignment flow after logging a game."""
 
-    def __init__(self, game_id: int, players: list[dict]):
+    def __init__(self, game_id: int, players: list[dict], original_message: Optional[discord.Message] = None):
         super().__init__(timeout=300)
         self.game_id = game_id
         self.players = players
+        self.original_message = original_message
         self.add_item(PlayerSelectForStereotype(players))
 
     @ui.button(label="Done", style=discord.ButtonStyle.success, row=1)
     async def done(self, interaction: discord.Interaction, button: ui.Button) -> None:
         """Finish stereotype assignment."""
+        db = interaction.client.db
+        stereotypes = await db.get_game_stereotypes(self.game_id)
+
+        if stereotypes:
+            narrative = format_stereotype_narrative(stereotypes)
+            content = f"Game logging complete!\n\n{narrative}"
+        else:
+            content = "Game logging complete!"
+
         await interaction.response.edit_message(
-            content="Game logging complete!",
+            content=content,
             view=None
         )
+
+        # Delete the original "Log a Game" prompt to reduce clutter
+        if self.original_message:
+            try:
+                await self.original_message.delete()
+            except discord.NotFound:
+                pass  # Already deleted
 
     async def on_timeout(self) -> None:
         """Handle view timeout."""
@@ -372,13 +464,16 @@ class GameLogging(commands.Cog):
     @app_commands.command(name="log", description="Log a new Commander game")
     async def log_game(self, interaction: discord.Interaction) -> None:
         """Start the game logging flow."""
+        await interaction.response.defer()
+
         embed = create_info_embed(
             "Log a Game",
             "Select the game type to continue:"
         )
 
         view = GameTypeView()
-        await interaction.response.send_message(embed=embed, view=view)
+        message = await interaction.followup.send(embed=embed, view=view)
+        view.original_message = message
 
 
 async def setup(bot: commands.Bot) -> None:

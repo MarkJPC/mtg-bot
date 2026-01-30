@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: mtg-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DATABASE_PATH
+        value: mtg_tracker.db

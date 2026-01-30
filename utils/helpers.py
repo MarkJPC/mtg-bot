@@ -7,6 +7,22 @@ from typing import Optional
 from config import EMBED_COLOR
 
 
+# ANSI color codes for console output
+class Colors:
+    RESET = "\033[0m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    WHITE = "\033[97m"
+
+def log(source: str, message: str, color: str = Colors.WHITE):
+    """Print colored log with source tag."""
+    print(f"{color}[{source}]{Colors.RESET} {message}")
+
+
 def parse_mentions(text: str) -> list[str]:
     """
     Extract Discord user IDs from mention strings.
@@ -15,8 +31,47 @@ def parse_mentions(text: str) -> list[str]:
     - <@123456789> (standard mention)
     - <@!123456789> (nickname mention)
     """
+    log("HELPERS", f"parse_mentions called with: '{text}'", Colors.YELLOW)
     pattern = r"<@!?(\d+)>"
-    return re.findall(pattern, text)
+    result = re.findall(pattern, text)
+    log("HELPERS", f"  regex pattern: {pattern}", Colors.YELLOW)
+    log("HELPERS", f"  result: {result}", Colors.YELLOW)
+    return result
+
+
+def parse_player_names(text: str) -> list[str]:
+    """
+    Parse player names/mentions from text input.
+
+    Supports:
+    - Plain usernames separated by spaces, commas, or newlines
+    - @username format (strips the @)
+    - <@123456789> Discord mention format
+    """
+    log("HELPERS", f"parse_player_names called with: '{text}'", Colors.YELLOW)
+
+    # First try to extract Discord mention IDs
+    mention_pattern = r"<@!?(\d+)>"
+    mention_ids = re.findall(mention_pattern, text)
+    if mention_ids:
+        log("HELPERS", f"  Found mention IDs: {mention_ids}", Colors.YELLOW)
+        return [("id", mid) for mid in mention_ids]
+
+    # Otherwise, parse as plain text usernames
+    # Split by commas, spaces, or newlines
+    # Remove @ prefix if present
+    text = text.replace(",", " ").replace("\n", " ")
+    names = []
+    for part in text.split():
+        part = part.strip()
+        if part:
+            # Remove @ prefix if present
+            if part.startswith("@"):
+                part = part[1:]
+            names.append(("name", part))
+
+    log("HELPERS", f"  Parsed names: {names}", Colors.YELLOW)
+    return names
 
 
 def format_placement(placement: int, game_type: str = "multiplayer") -> str:
@@ -121,6 +176,31 @@ def get_medal_emoji(placement: int) -> str:
     """Get medal emoji for placement."""
     medals = {1: "", 2: "", 3: ""}
     return medals.get(placement, "")
+
+
+def format_stereotype_narrative(stereotypes: list[tuple[str, str]]) -> str:
+    """Format stereotypes as a silly narrative.
+
+    Input: [(player_name, stereotype_name), ...]
+    Output: 'Player1 "stereotype1" while Player2 "stereotype2"...'
+    """
+    if not stereotypes:
+        return ""
+
+    # Group by player
+    player_stereotypes: dict[str, list[str]] = {}
+    for player_name, stereotype_name in stereotypes:
+        if player_name not in player_stereotypes:
+            player_stereotypes[player_name] = []
+        player_stereotypes[player_name].append(stereotype_name)
+
+    # Build narrative parts
+    parts = []
+    for player_name, stereotype_list in player_stereotypes.items():
+        quoted = [f'"{s}"' for s in stereotype_list]
+        parts.append(f"{player_name} {', '.join(quoted)}")
+
+    return " while ".join(parts) + "..."
 
 
 def format_head_to_head(stats) -> str:
